@@ -1,12 +1,17 @@
 // Copyright (c) 2012-2019 K Team. All Rights Reserved.
 package org.kframework.utils.errorsystem;
 
+import org.apache.commons.lang3.StringUtils;
 import org.kframework.attributes.HasLocation;
 import org.kframework.attributes.Location;
 import org.kframework.attributes.Source;
 
+import java.io.IOException;
 import java.io.Serializable;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.*;
+import java.util.stream.Stream;
 
 public class KException implements Serializable, HasLocation {
     protected final ExceptionType type;
@@ -15,6 +20,7 @@ public class KException implements Serializable, HasLocation {
     private final Location location;
     private final String message;
     private final Throwable exception;
+    private final String sourceText;
     private StringBuilder trace = new StringBuilder();
 
     private static final Map<KExceptionGroup, String> labels;
@@ -59,6 +65,7 @@ public class KException implements Serializable, HasLocation {
         this.source = source;
         this.location = location;
         this.exception = exception;
+        this.sourceText = getSourceLineText();
     }
 
     @Override
@@ -120,12 +127,94 @@ public class KException implements Serializable, HasLocation {
         return toString(false);
     }
 
+    private enum IndicatorLinePosition {
+        above,below,
+    }
+
+    private StringBuilder getIndicatorLine(int lineNumberPadding) {
+        StringBuilder sourceLineText = new StringBuilder();
+        sourceLineText.append("\n\t" + StringUtils.repeat(' ', lineNumberPadding) + " .\t");
+        sourceLineText.append(StringUtils.repeat(' ', location.startColumn() - 1));
+        sourceLineText.append(StringUtils.repeat('~', location.endColumn() - location.startColumn()));
+
+        return sourceLineText;
+    }
+
+    private String getTopIndicatorLine(int lineNumberPadding, IndicatorLinePosition position) {
+        StringBuilder indicatorLineText = getIndicatorLine(lineNumberPadding);
+        char arrow = '^';
+
+        if (position.equals(IndicatorLinePosition.above)) {
+            arrow = 'v';
+        }
+        indicatorLineText.setCharAt(indicatorLineText.indexOf("~"), arrow);
+        return indicatorLineText.toString();
+    }
+
+    private String getBottomIndicatorLine(int lineNumberPadding) {
+        StringBuilder indicatorLineText = getIndicatorLine(lineNumberPadding);
+
+        indicatorLineText.setCharAt(indicatorLineText.lastIndexOf("~"), '^');
+        return indicatorLineText.toString();
+    }
+
+
+    private String getSourceText (int lineNumber, int lineNumberPadding) throws java.io.IOException {
+        StringBuilder sourceLineText = new StringBuilder();
+        sourceLineText.append("\n\t");
+        sourceLineText.append(String.format("%"+lineNumberPadding+"s", String.valueOf(lineNumber)) + " |\t");
+        Stream lines = Files.lines(Paths.get(getSource().source()));
+        sourceLineText.append((String) lines.skip(lineNumber - 1).findFirst().get());
+        return sourceLineText.toString();
+    }
+
+    private String getSourceLineText() {
+        StringBuilder sourceLineText = new StringBuilder();
+
+        try {
+            int lineNumberCharacterLength = String.valueOf(location.endLine()).length();
+            int errorLineSpan = location.endLine() - location.startLine() + 1;
+
+            if (errorLineSpan == 1) { // the error spans only one line of code
+                sourceLineText.append(getSourceText(location.startLine(), lineNumberCharacterLength));
+                sourceLineText.append(getTopIndicatorLine(lineNumberCharacterLength, IndicatorLinePosition.below));
+            } else if (errorLineSpan > 1) { // the error spans multiple lines of code
+
+                /* All errors should display a maximum of 3 lines from source to avoid overcrowding the terminal */
+
+                sourceLineText.append(getTopIndicatorLine(lineNumberCharacterLength, IndicatorLinePosition.above));
+                sourceLineText.append(getSourceText(location.startLine(), lineNumberCharacterLength));
+
+                if (errorLineSpan == 3) {
+                    sourceLineText.append(getSourceText(location.startLine() + 1, lineNumberCharacterLength));
+                } else if (errorLineSpan > 3) {
+                    // Represent the middle line of errors that span longer than three lines with a single line
+                    // containing ellipses (...). This avoid crowding the console with lines of source code.
+                    sourceLineText.append("\n\t");
+                    sourceLineText.append(String.format("%"+lineNumberCharacterLength+"s", ".") + "..");
+                }
+
+                sourceLineText.append(getSourceText(location.endLine(), lineNumberCharacterLength));
+                sourceLineText.append(getBottomIndicatorLine(lineNumberCharacterLength));
+
+            }
+
+            // Add a new line to break up each message. This looks nice when errors are printed on console.
+            sourceLineText.append("\n");
+        }
+        catch (Exception e) {
+            return null;
+        }
+        return sourceLineText.toString();
+    }
+
     public String toString(boolean verbose) {
         return "[" + (type == ExceptionType.ERROR ? "Error" : "Warning") + "] " + labels.get(exceptionGroup) + ": " + message
                 + (exception == null ? "" : " (" + exception.getClass().getSimpleName() + ": " + exception.getMessage() + ")")
                 + trace.toString() + traceTail()
                 + (source == null ? "" : "\n\t" + source)
-                + (location == null ? "" : "\n\t" + location);
+                + (location == null ? "" : "\n\t" + location)
+                + (sourceText == null ? "" : sourceText);
     }
 
     public String getMessage() {
